@@ -1,67 +1,104 @@
 package main
 
 import (
-	"fmt"
+	"crypto/tls"
+	"encoding/json"
 	"github.com/gin-gonic/gin"
-	"io/ioutil"
+	"io"
+	"log"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
+
+type exchange struct {
+	CurID           int     `json:"Cur_ID"`
+	Date            string  `json:"Date"`
+	CurAbbreviation string  `json:"Cur_Abbreviation"`
+	CurScale        int     `json:"Cur_Scale"`
+	CurName         string  `json:"Cur_Name"`
+	CurOfficialRate float64 `json:"Cur_OfficialRate"`
+}
+
 
 func main()  {
 	g:=router()
-	g.Run(":8080")
+	err := g.Run(":8090")
+	if err != nil {
+		return 
+	}
 }
 
 func router() *gin.Engine{
-	g := gin.New()
 	gin.SetMode(gin.ReleaseMode)
-	g.GET("/rub", RUB)
-	g.GET("/eur", EUR)
-	g.GET("/usd", USD)
+	g := gin.New()
+	g.GET("/rub", sendExchange)
+	g.GET("/eur", sendExchange)
+	g.GET("/usd", sendExchange)
 	return g
 }
 
-func RUB(c *gin.Context){
-	url:= "https://www.nbrb.by/api/exrates/rates/456?periodicity=0"
-	x:=client(url)
-	c.JSON(http.StatusOK, x)
-}
-func EUR(c *gin.Context){
-	url:= "https://www.nbrb.by/api/exrates/rates/451?periodicity=0"
-	x:=client(url)
-	c.JSON(http.StatusOK, x)
-}
-func USD(c *gin.Context){
-	url:= "https://www.nbrb.by/api/exrates/rates/431?periodicity=0"
-	x:=client(url)
-	c.JSON(http.StatusOK, x)
+func newExchange() exchange {
+	return exchange{CurID: 0, Date:"" ,CurAbbreviation: "",CurScale:0 ,CurName: "",CurOfficialRate: 0}
 }
 
-func client(url string) string {
-
-	method := "GET"
-
-	client := &http.Client {
+func checker(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/rub":
+		return "456"
+	case "/usd":
+		return "431"
+	case "/eur":
+		return "451"
 	}
-	req, err := http.NewRequest(method, url, nil)
+	return "checker error"
+}
+func client(c *gin.Context, target interface{}) error {
+	ch:= checker(c)
+	url:= "https://www.nbrb.by/api/exrates/rates/"+ch+"?periodicity=0"
+	log.Println(url)
+
+	customTransport := &(*http.DefaultTransport.(*http.Transport)) // make shallow copy
+	customTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	client := &http.Client{Transport: customTransport,Timeout: 10 * time.Second}
+
+	r, err := client.Get(url)
 
 	if err != nil {
-		fmt.Println(err)
-		return "error1"
+		log.Println("error code",err)
 	}
-	//req.Header.Add("Cookie", "ASP.NET_SessionId=flhixhlhg10gq4epbj0zc0oq")
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(r.Body)
 
-	res, err := client.Do(req)
-	if err != nil {
-		fmt.Println(err)
-		return "error2"
-	}
-	defer res.Body.Close()
 
-	body, err := ioutil.ReadAll(res.Body)
+	return json.NewDecoder(r.Body).Decode(target) ///write to struct fields
+}
+
+func sendExchange(c *gin.Context){
+	currency := newExchange()   //create empty struct
+	err := client(c, &currency) //call write to strict fields
+
 	if err != nil {
-		fmt.Println(err)
-		return"error3"
+		return
 	}
-	return string(body)
+
+	abv := strconv.FormatFloat(currency.CurOfficialRate, 'f', 4, 64)
+
+	 log.Println ("request time")
+
+	c.JSON(http.StatusOK, normalize(abv))
+}
+
+
+func normalize(s string) string {
+	var newStr strings.Builder
+	for _,r:= range s{
+		switch r {
+			case '.': newStr.WriteRune(44)
+		default: newStr.WriteRune(r)
+		}
+	}
+	return newStr.String()
 }
